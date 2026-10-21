@@ -21,8 +21,9 @@
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE))
 #define NEXT_FREE(bp) (*(char **)(bp))
 #define PREV_FREE(bp) (*(char **)((char *)(bp) + DSIZE))
+#define NCLASS 28
 static char *heap_listp = NULL;
-static char *free_listp = NULL;
+static char *free_listp[NCLASS];
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
 static size_t adjust(size_t size);
@@ -31,8 +32,11 @@ static void place(void *bp, size_t asize);
 static void absorb(char *ptr, char *next, size_t asize);
 static void insert_free(void *bp);
 static void remove_free(void *bp);
+static int size_class(size_t size);
 int mm_init(void) {
-    free_listp = NULL;
+    int i;
+    for (i = 0; i < NCLASS; i++)
+        free_listp[i] = NULL;
     if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
         return -1;
     PUT(heap_listp, 0);
@@ -130,7 +134,8 @@ static void *extend_heap(size_t words) {
     return coalesce(bp);
 }
 static void insert_free(void *bp) {
-    char *cur = free_listp;
+    int cls = size_class(GET_SIZE(HDRP(bp)));
+    char *cur = free_listp[cls];
     char *prev = NULL;
     while (cur != NULL && cur < (char *)bp) {
         prev = cur;
@@ -141,15 +146,16 @@ static void insert_free(void *bp) {
     if (prev != NULL)
         NEXT_FREE(prev) = bp;
     else
-        free_listp = bp;
+        free_listp[cls] = bp;
     if (cur != NULL)
         PREV_FREE(cur) = bp;
 }
 static void remove_free(void *bp) {
+    int cls = size_class(GET_SIZE(HDRP(bp)));
     if (PREV_FREE(bp) != NULL)
         NEXT_FREE(PREV_FREE(bp)) = NEXT_FREE(bp);
     else
-        free_listp = NEXT_FREE(bp);
+        free_listp[cls] = NEXT_FREE(bp);
     if (NEXT_FREE(bp) != NULL)
         PREV_FREE(NEXT_FREE(bp)) = PREV_FREE(bp);
 }
@@ -159,11 +165,28 @@ static size_t adjust(size_t size) {
     return DSIZE * ((size + DSIZE + (DSIZE - 1)) / DSIZE);
 }
 static void *find_fit(size_t asize) {
-    char *bp;
-    for (bp = free_listp; bp != NULL; bp = NEXT_FREE(bp))
-        if (asize <= GET_SIZE(HDRP(bp)))
-            return bp;
-    return NULL;
+    int cls = size_class(asize);
+    char *top_fit = NULL;
+    for (; cls < NCLASS; cls++) {
+        char *bp = free_listp[cls];
+        char *best = NULL;
+        size_t best_size = 0;
+        for (; bp != NULL; bp = NEXT_FREE(bp)) {
+            size_t s = GET_SIZE(HDRP(bp));
+            if (s < asize)
+                continue;
+            if (GET_SIZE(HDRP(NEXT_BLKP(bp))) == 0) {
+                if (top_fit == NULL)
+                    top_fit = bp;
+            } else if (best == NULL || s < best_size) {
+                best = bp;
+                best_size = s;
+            }
+        }
+        if (best != NULL)
+            return best;
+    }
+    return top_fit;
 }
 static void place(void *bp, size_t asize) {
     size_t csize = GET_SIZE(HDRP(bp));
@@ -224,4 +247,35 @@ static void absorb(char *ptr, char *next, size_t asize) {
         PUT(HDRP(ptr), PACK(combined, 1));
         PUT(FTRP(ptr), PACK(combined, 1));
     }
+}
+static int size_class(size_t size) {
+    if (size <= 128)
+        return (int)((size - MINBLOCK) / DSIZE);
+    if (size <= 256)
+        return 14;
+    if (size <= 512)
+        return 15;
+    if (size <= 1024)
+        return 16;
+    if (size <= 2048)
+        return 17;
+    if (size <= 4096)
+        return 18;
+    if (size <= 8192)
+        return 19;
+    if (size <= 16384)
+        return 20;
+    if (size <= 32768)
+        return 21;
+    if (size <= 65536)
+        return 22;
+    if (size <= 131072)
+        return 23;
+    if (size <= 262144)
+        return 24;
+    if (size <= 524288)
+        return 25;
+    if (size <= 1048576)
+        return 26;
+    return 27;
 }
